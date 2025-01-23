@@ -13,9 +13,9 @@ protocol OptionsDictionaryConvertable {
     static func optionsDictionary(_ options: [Self]) -> [String: Any]
 }
 
-@available(macOS 10.15, *)
+@available(macOS 10.15, *) //Kind of a namespace, easier with nested enums
 public extension BluetoothCentralManager {
-    enum InitOptions: Sendable, OptionsDictionaryConvertable { //TODO: ExpressibleByBooleanLiteral, ExpressibleByArrayLiteral
+    enum InitOptions: Sendable, OptionsDictionaryConvertable { //TODO: ExpressibleByBooleanLiteral, ExpressibleByStringLiteral
         case showPowerAlert(_ value: Bool)
         case restoreIdentifier(uuid: UUID)
         

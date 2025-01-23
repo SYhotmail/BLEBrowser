@@ -6,89 +6,116 @@
 //
 
 import SwiftUI
-import SwiftData
+
+struct ConnectedPeripheralView: View {
+    @ObservedObject var viewModel: ConnectedPeripheralViewModel
+    var tapBlock: () -> Void //TODO: place into VM ...
+    @ViewBuilder func connectedDeviceViewCore() -> Text {
+        Text(viewModel.title ?? "")
+    }
+    
+    var body: some View {
+        Circle()
+            .frame(size: type(of: viewModel).itemSize)
+            .overlay {
+                if viewModel.connected {
+                    connectedDeviceViewCore()
+                    .foregroundStyle(Color.green)
+                } else {
+                    connectedDeviceViewCore()
+                    .foregroundStyle(BackgroundStyle.background)
+                }
+            }
+            .background(.foreground)
+            .clipShape(Circle())
+            .onTapGesture {
+                viewModel.connected.toggle()
+                tapBlock()
+            }
+    }
+}
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
     @Environment(\.openURL) var openURL
     
     @StateObject var viewModel = ContentViewModel()
-    @Query private var items: [Item]
-
+    
+    @ViewBuilder func connectedDeviceView(viewModel deviceVM: ConnectedPeripheralViewModel) -> some View {
+        ConnectedPeripheralView(viewModel: deviceVM) {
+            viewModel.onPeripheralClicked(viewModel: deviceVM)
+        }
+    }
+    
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
-            }
-#if os(macOS)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-#endif
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-#endif
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
+        ZStack {
+            GeometryReader { _ in
+                ForEach(viewModel.connectedPeripherals) {
+                    connectedDeviceView(viewModel: $0)
+                        .position($0.position)
+                        .transition(.opacity.combined(with: .scale))
                 }
             }
-        } detail: {
+        
+            /*ScrollView(.vertical.union(.horizontal)) {
+                ForEach(viewModel.connectedPeripherals) {
+                    connectedDeviceView(viewModel: $0)
+                        .position($0.position)
+                        .transition(.opacity.combined(with: .scale))
+                }
+            }
+            .frame(maxWidth: .infinity,
+                    maxHeight: .infinity)
+            .onScrollGeometryChange(for: CGSize.self) { geometry in
+                geometry.bounds.size
+            } action: { _, newValue in
+                //self.viewModel.canvasSize = newValue
+            }*/.onGeometryChange(for: CGSize.self) { geometry in
+                geometry.size
+            } action: { newValue in
+                self.viewModel.canvasSize = newValue
+            }.overlay(alignment: .topTrailing) {
+                Toggle(isOn: $viewModel.autoConnect) {
+                    Text("Auto Connect")
+                        .foregroundStyle(.primary)
+                }.padding(.horizontal)
+            }
+
+            
             Button(action: viewModel.scanDevices) {
                 Image(systemName: viewModel.isScanningPressed ? "pause.fill" :  "play.fill")
                     .imageScale(.large)
+                    .tint(.primary)
+                    .foregroundStyle(.primary)
                     .padding()
-            }.disabled(!viewModel.enableScanButon)
-                .alert(
-                    viewModel.bluetoothInfo?.title ?? "",
-                    isPresented: $viewModel.enableBluetoothAlert
-                            ) {
-                                Button("OK") {
-                                    // Handle the acknowledgement.
-                                    viewModel.onBluetoothClicked(enabled: true)
-                                }
-                                Button("Cancel") {
-                                    viewModel.onBluetoothClicked(enabled: false)
-                                }
-                            } message: {
-                                Text(viewModel.bluetoothInfo?.message ?? "")
-                            }
-                            .onReceive(viewModel.$openURL) { url in
-                                guard let url else {
-                                    return
-                                }
-                                openURL(url)
-                            }
-                            
-        }
-    }
-
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
-
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+                    .background(.secondary)
+                    .clipShape(Circle())
             }
+            .disabled(!viewModel.enableScanButon)
         }
+        .alert(
+            viewModel.bluetoothInfo?.title ?? "",
+            isPresented: $viewModel.enableBluetoothAlert
+                    ) {
+                        Button("OK") {
+                            // Handle the acknowledgement.
+                            viewModel.onBluetoothClicked(enabled: true)
+                        }
+                        Button("Cancel") {
+                            viewModel.onBluetoothClicked(enabled: false)
+                        }
+                    } message: {
+                        Text(viewModel.bluetoothInfo?.message ?? "")
+                    }
+                    .onReceive(viewModel.$openURL) { url in
+                        guard let url else {
+                            return
+                        }
+                        openURL(url)
+                    }
     }
+
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
 }
