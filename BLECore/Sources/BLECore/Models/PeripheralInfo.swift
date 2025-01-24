@@ -22,6 +22,12 @@ extension UUIDIdentifiableSendableType where Self: Hashable {
     }
 }
 
+public struct FailedPeripheralInfo: UUIDIdentifiableSendableType {
+    public var id: UUID { peripheralInfo.id }
+    public let peripheralInfo: PeripheralInfo
+    public let error: (any Error)?
+}
+
 public struct PeripheralInfo: UUIDIdentifiableSendableType {
     public let id: UUID
     public let name: String?

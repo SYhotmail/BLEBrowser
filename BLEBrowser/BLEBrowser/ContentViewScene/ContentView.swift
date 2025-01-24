@@ -10,28 +10,42 @@ import SwiftUI
 struct ConnectedPeripheralView: View {
     @ObservedObject var viewModel: ConnectedPeripheralViewModel
     var tapBlock: () -> Void //TODO: place into VM ...
-    @ViewBuilder func connectedDeviceViewCore() -> Text {
-        Text(viewModel.title ?? "")
-    }
     
     var body: some View {
-        Circle()
-            .frame(size: type(of: viewModel).itemSize)
-            .overlay {
-                if viewModel.connected {
-                    connectedDeviceViewCore()
-                    .foregroundStyle(Color.green)
-                } else {
-                    connectedDeviceViewCore()
-                    .foregroundStyle(BackgroundStyle.background)
+        let tapGesture: () -> Void = {
+            tapBlock()
+        }
+        if viewModel.connected {
+            Circle()
+                .fill(.green)
+                .frame(size: type(of: viewModel).itemSize)
+                .overlay {
+                    Text(viewModel.title ?? "")
+                        .foregroundStyle(.background)
                 }
-            }
-            .background(.foreground)
-            .clipShape(Circle())
-            .onTapGesture {
-                viewModel.connected.toggle()
-                tapBlock()
-            }
+                .clipShape(Circle())
+                .onTapGesture(perform: tapGesture)
+        } else if !viewModel.connectable {
+            Circle()
+                .fill(.red)
+                .frame(size: type(of: viewModel).itemSize)
+                .overlay {
+                    Text(viewModel.title ?? "")
+                        .foregroundStyle(.background)
+                }
+                .clipShape(Circle())
+                .onTapGesture(perform: tapGesture)
+        } else {
+            Circle()
+                .fill(.foreground)
+                .frame(size: type(of: viewModel).itemSize)
+                .overlay {
+                    Text(viewModel.title ?? "")
+                        .foregroundStyle(.background)
+                }
+                .clipShape(Circle())
+                .onTapGesture(perform: tapGesture)
+        }
     }
 }
 
@@ -87,9 +101,9 @@ struct ContentView: View {
                     .tint(.primary)
                     .foregroundStyle(.primary)
                     .padding()
-                    .background(.secondary)
-                    .clipShape(Circle())
             }
+            .background(.secondary)
+            .clipShape(Circle())
             .disabled(!viewModel.enableScanButon)
         }
         .alert(

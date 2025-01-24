@@ -11,4 +11,8 @@ extension Data {
     func hexEncodedBLEString() -> String {
         return map { String(format: "%02hhx", $0) }.joined()
     }
+    
+    func encodeToString(encoding: String.Encoding = .utf8) -> String? {
+        .init(data: self, encoding: encoding)
+    }
 }

@@ -60,22 +60,17 @@ public struct AdvertisementServiceInfo: Sendable, Equatable {
     public private(set)var solicitedUUIDs = [String]()
     public let transmitPower: Float?
     public let serviceDataDic: [String: Data]
-    public let isConnectable: Bool
+    public let isConnectable: Bool?
     
     init(data advertisementData: [String: Any], rssi: Float?) {
         self.rssi = rssi
         
         //debugPrint("!!! \(#function) data \(advertisementData)")
         self.localName = advertisementData[CBAdvertisementDataLocalNameKey] as? String
-        
+        assert(self.localName != nil || advertisementData[CBAdvertisementDataLocalNameKey] == nil)
         let manufacturerData = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data
-        let manufacturerDataStr = manufacturerData?.hexEncodedBLEString()
-        self.manufacturerData = manufacturerDataStr
-#if DEBUG
-        if manufacturerDataStr != nil, let manufacturerData {
-            debugPrint("!!! hex str \(manufacturerDataStr) \(String(data: manufacturerData, encoding: .utf8))")
-        }
-#endif
+        self.manufacturerData = manufacturerData?.hexEncodedBLEString()
+        
         if let dic = advertisementData[CBAdvertisementDataServiceDataKey] as? [CBUUID : Data], !dic.isEmpty {
             var serviceDataDic = [String: Data]()
             dic.forEach { tuple in
@@ -89,8 +84,8 @@ public struct AdvertisementServiceInfo: Sendable, Equatable {
         
         assert(!serviceDataDic.isEmpty || advertisementData[CBAdvertisementDataServiceDataKey] == nil)
         
-        self.transmitPower = (advertisementData[CBAdvertisementDataTxPowerLevelKey] as? NSNumber)?.floatValue
-        self.isConnectable = (advertisementData[CBAdvertisementDataIsConnectable] as? NSNumber)?.boolValue == true
+        self.transmitPower = advertisementData[CBAdvertisementDataTxPowerLevelKey] as? Float
+        self.isConnectable = advertisementData[CBAdvertisementDataIsConnectable] as? Bool
         
         let keyPaths: [WritableKeyPath<Self, [String]>] = [\.serviceUUIDs, \.overflowUUIDs, \.solicitedUUIDs]
         let keys: [String] = [CBAdvertisementDataServiceUUIDsKey, CBAdvertisementDataOverflowServiceUUIDsKey, CBAdvertisementDataSolicitedServiceUUIDsKey]

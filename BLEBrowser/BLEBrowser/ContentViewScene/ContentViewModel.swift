@@ -27,6 +27,7 @@ final class ConnectedPeripheralViewModel: ObservableObject {
     
     var title: String?
     @Published var connected: Bool
+    @Published var connectable: Bool
     
     var rect: CGRect {
         .init(center: position,
@@ -37,12 +38,14 @@ final class ConnectedPeripheralViewModel: ObservableObject {
          position: CGPoint,
          signalStrength: Float? = nil,
          title: String? = nil,
-         connected: Bool = true) {
+         connected: Bool = true,
+         connectable: Bool = true) {
         self.info = info
         self.position = position
         self.signalStrength = signalStrength
         self.title = title ?? info.name
         self.connected = connected
+        self.connectable = connectable
     }
     
     static let itemSize = CGSize(width: 100, height: 100)
@@ -118,10 +121,15 @@ final class ContentViewModel: ObservableObject {
     
     func onPeripheralClicked(viewModel: ConnectedPeripheralViewModel) {
         let uuid = viewModel.id
-        if viewModel.connected {
-            centralManager.connectToPeripheral(uuid: uuid)
+        if viewModel.connectable {
+            viewModel.connected.toggle()
         } else {
-            centralManager.disconnectPeripheral(uuid: uuid)
+            viewModel.connected.toggle() //TODO: define some timer for connection...
+        }
+        let method = viewModel.connected ? centralManager.connectToPeripheral(uuid:) : centralManager.disconnectPeripheral(uuid:)
+        let result = method(uuid)
+        if viewModel.connected, !result {
+            viewModel.connected = false
         }
     }
     
@@ -129,11 +137,16 @@ final class ContentViewModel: ObservableObject {
         randomPosition(canvasSize: canvasSize)
     }
     
-    private func changePeripheral(info: PeripheralInfo, connected: Bool) {
+    private func changePeripheral(info: PeripheralInfo,
+                                  connected: Bool,
+                                  connectable: Bool?) {
         
         if let index = self.connectedPeripherals.firstIndex(where: { $0.id == info.id }) {
             self.connectedPeripherals[index].info = info
             self.connectedPeripherals[index].connected = connected
+            if let connectable {
+                self.connectedPeripherals[index].connectable = connectable
+            }
             return
         }
         
@@ -151,7 +164,8 @@ final class ContentViewModel: ObservableObject {
         withAnimation { [weak self] in
             self?.connectedPeripherals.append(.init(info: info,
                                                     position: rect.center,
-                                                    connected: connected))
+                                                    connected: connected,
+                                                    connectable: connectable != false))
         }
     }
     
@@ -159,13 +173,16 @@ final class ContentViewModel: ObservableObject {
         
         $autoConnect.removeDuplicates().filter { $0 }.map { _ in () }.sink { [unowned self] in
             self.centralManager.advertisingPeripheralsMap().forEach { keyValue in
-                self.centralManager.connectToPeripheral(uuid: keyValue.key)
+                if keyValue.value.isConnectable != false {
+                    self.centralManager.connectToPeripheral(uuid: keyValue.key)
+                }
             }
         }.store(in: &disposeBag)
         
         centralManager.advertisePublisher.receive(on: DispatchQueue.main).sink { [unowned self] info in
             let id = info.id
-            if self.autoConnect {
+            let isConnectable = info.info.isConnectable != false
+            if self.autoConnect, isConnectable {
                 self.centralManager.connectToPeripheral(uuid: id) // connect to discover characteristics to display something better on UI...
             }
             if let index = self.connectedPeripherals.firstIndex(where: { $0.id == id }) {
@@ -175,13 +192,14 @@ final class ContentViewModel: ObservableObject {
             if !self.autoConnect {
                 self.changePeripheral(info: .init(id: id,
                                                   name: info.info.localName),
-                                      connected: false)
+                                      connected: false,
+                                      connectable: isConnectable)
             }
         }.store(in: &disposeBag)
         
         $canvasSize.removeDuplicates().sink { [unowned self] canvasSize in
             self.connectedPeripherals = self.connectedPeripherals.map {
-                var newInfo = $0
+                let newInfo = $0
                 var position = newInfo.position
                 position.x *= canvasSize.width/max(1, self.canvasSize.width)
                 position.y *= canvasSize.height/max(1, self.canvasSize.height)
@@ -194,7 +212,15 @@ final class ContentViewModel: ObservableObject {
         centralManager.connectedPublisher.receive(on: DispatchQueue.main).sink { [unowned self] info in
             //assert(self.connectedPeripherals.allSatisfy({ $0.id != info.id })) //duplicate...
             self.changePeripheral(info: info,
-                                  connected: true)
+                                  connected: true,
+                                  connectable: true)
+        }.store(in: &disposeBag)
+        
+        centralManager.failedToConnectPublisher.receive(on: DispatchQueue.main).sink { [unowned self] info in
+            debugPrint("!!! Failed to connect \(String(describing: info.error))")
+            self.changePeripheral(info: info.peripheralInfo,
+                                  connected: false,
+                                  connectable: nil) //TODO: check error
         }.store(in: &disposeBag)
         
         enableBluetoothAlert = centralManager.authorizationState.value == .denied

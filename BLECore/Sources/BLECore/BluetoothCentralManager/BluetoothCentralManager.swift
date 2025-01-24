@@ -16,6 +16,7 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
     public private(set)var authorizationState: CurrentValueSubject<CBManagerAuthorization, Never>
     public let advertisePublisher = PassthroughSubject<PeripheralAdvertisementInfo, Never>()
     public let connectedPublisher = PassthroughSubject<PeripheralInfo, Never>()
+    public let failedToConnectPublisher = PassthroughSubject<FailedPeripheralInfo, Never>()
     public let peripheralCharacteristicsPublisher = PassthroughSubject<PeripheralCharacteristicsInfo, Never>() //TODO: start using..
     
     public var isScanning: Bool { Self.isScanning(central: centralManager) }
@@ -79,11 +80,8 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         }
     }
     
-    public func disconnectPeripheral(uuid: UUID) {
-        let info = advertisingPeripherals.withLock {
-            $0.removeValue(forKey: uuid)
-        }
-        
+    @discardableResult
+    public func disconnectPeripheral(uuid: UUID) -> Bool {
         let extraInfo = connectedPeripherals.withLock {
             $0.removeValue(forKey: uuid)
         }
@@ -91,6 +89,10 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         var peripherals = [CBPeripheral]()
         if let extraInfo {
             peripherals = centralManager.retrieveConnectedPeripherals(withServices: [.init(nsuuid: extraInfo.id)])
+        }
+        
+        let info = advertisingPeripherals.withLock {
+            $0.removeValue(forKey: uuid)
         }
         
         if peripherals.isEmpty, info != nil {
@@ -110,6 +112,8 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
                 _ = self.connectingPeripheralsMap.removeValue(forKey: uuid)
             }
         }
+        
+        return !peripherals.isEmpty
     }
     
     private static func isScanning(central: CBCentralManager) -> Bool {
@@ -156,7 +160,10 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         }
         
         if !peripheral.state.asMinimumConnecting {
-            centralManager.connect(peripheral, options: nil) //TODO: make enum for connection options...
+            centralManager.connect(peripheral, options: [CBConnectPeripheralOptionNotifyOnConnectionKey: true]) //TODO: make enum for connection options...
+            return true
+        } else if peripheral.state == .connected {
+            didConnectCore(central: centralManager, peripheral: peripheral)
             return true
         }
         return false
@@ -185,8 +192,7 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         managerState.value = state
     }
     
-    public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        //assert(advertisingPeripherals[peripheral]?.isConnectable == true)
+    private func didConnectCore(central: CBCentralManager, peripheral: CBPeripheral) {
         let id = peripheral.identifier
         guard connectedPeripherals.withLock({
             let result = $0[id] == nil
@@ -198,11 +204,18 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         }
         connectedPublisher.send(.init(peripheral: peripheral))
         
-        discoverServices(peripheral: peripheral, ids: nil) //move it out to public API
+        discoverServices(peripheral: peripheral, ids: nil)
+    }
+    
+    public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        didConnectCore(central: central, peripheral: peripheral)
     }
     
     private func discoverServices(peripheral: CBPeripheral, ids: [String]? = nil, force: Bool = false) {
         guard force || peripheral.services == nil else {
+            if peripheral.services != nil {
+                didDiscoverServicesCore(peripheral: peripheral)
+            }
             return
         }
         
@@ -218,14 +231,16 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
             }
         }
         
-        guard let error else {
-            return
+        
+        if let error  {
+            debugPrint("!!! Error \(error) \(#function)")
         }
         
-        debugPrint("!!! \(#function) error \(error)")
         _ = connectedPeripherals.withLock({
             $0.removeValue(forKey: id)
         })
+        
+        failedToConnectPublisher.send(.init(peripheralInfo: .init(peripheral: peripheral), error: error))
     }
     
     // MARK: - CBPeripheralDelegate
@@ -233,14 +248,11 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         discoverServices(peripheral: peripheral, ids: invalidatedServices.map { $0.uuid.uuidString }, force: true) //move it out to public API
     }
     
-    public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
-        if let error {
-            debugPrint("!!! \(#function) error \(error)")
-            return
-        }
-        
+    private func didDiscoverServicesCore(peripheral: CBPeripheral) {
         if let services = peripheral.services, !services.isEmpty { //TODO: access constants...
             debugPrint("!!! \(#function) services \(services)")
+            debugPrint("!!! \(#function) services.uuidString \(services.map { $0.uuid.uuidString })")
+            //debugPrint("!!! \(#function) services.data \(services.compactMap { $0.uuid.data.encodeToString() })")
             services.forEach { service in
                 if service.includedServices == nil {
                     peripheral.delegate = self
@@ -249,30 +261,36 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
                 if service.characteristics == nil {
                     peripheral.delegate = self
                     peripheral.discoverCharacteristics(nil, for: service)
+                } else {
+                    didDiscoverCharacteristicsCore(peripheral: peripheral, service: service)
                 }
             }
         }
     }
     
+    public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: (any Error)?) {
+        if let error {
+            debugPrint("!!! Error \(error) \(#function)")
+            return
+        }
+        
+        didDiscoverServicesCore(peripheral: peripheral)
+    }
+    
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverIncludedServicesFor service: CBService, error: (any Error)?) {
         if let error {
-            debugPrint("!!! \(#function) error \(error)")
+            debugPrint("!!! Error \(error) \(#function)")
             return
         }
         debugPrint("!!! \(#function) included services \(service.includedServices ?? [])")
     }
     
-    public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: (any Error)?) {
-        if let error {
-            debugPrint("!!! \(#function) error \(error)")
-            return
-        }
-        
+    private func didDiscoverCharacteristicsCore(peripheral: CBPeripheral, service: CBService) {
         let id = peripheral.identifier
         
         let characteristics = service.characteristics
         
-        let characteristicsInfo = characteristics?.compactMap { PeripheralCharacteristicsInfo.CharacteristicInfo(chacteristic: $0) } ?? []
+        let characteristicsInfo = characteristics?.map { PeripheralCharacteristicsInfo.CharacteristicInfo(chacteristic: $0) } ?? []
         
         guard let info: PeripheralCharacteristicsInfo = connectedPeripherals.withLock({ dic in
             if var value = dic[id] {
@@ -295,15 +313,26 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
             
             if characteristic.value == nil, characteristic.properties.contains(.read) {
                 peripheral.readValue(for: characteristic)
+            } else {
+                readValue(characteristic: characteristic)
             }
         }
         
         peripheralCharacteristicsPublisher.send(info)
     }
     
+    public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: (any Error)?) {
+        if let error {
+            debugPrint("!!! Error \(error) \(#function)")
+            return
+        }
+        
+        didDiscoverCharacteristicsCore(peripheral: peripheral, service: service)
+    }
+    
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverDescriptorsFor characteristic: CBCharacteristic, error: (any Error)?) {
         if let error {
-            debugPrint("!!! \(#function) error \(error)")
+            debugPrint("!!! Error \(error) \(#function)")
             return
         }
         
@@ -312,22 +341,55 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         }
     }
     
-    public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: (any Error)?) {
-        if let error {
-            debugPrint("!!! \(#function) error \(error)")
+    private func readValue(characteristic: CBCharacteristic) {
+        guard let value = characteristic.value else  {
             return
         }
-        if let value = characteristic.value {
-            debugPrint("!!! \(characteristic) value \(value)")
+            
+        debugPrint("!!! \(characteristic) value \(value)")
+        if characteristic.service?.uuid.uuidString == BLECoreCBServiceDeviceInfoCBUUIDString, let textValue = value.encodeToString() { //device information...
+            switch characteristic.uuid.uuidString {
+            case BLECoreCharacteristicManufactureNameString :
+                debugPrint("Manufacturer Name: \(textValue)")
+            case BLECoreCharacteristicModelNameString:
+                debugPrint("Model Number: \(textValue)")
+            default:
+                debugPrint("Characteristic \(characteristic.uuid) value: \(textValue)")
+            }
         }
+    }
+    
+    public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: (any Error)?) {
+        
+        if let error {
+            if let cbError = error as? CBATTError, cbError.code == .insufficientAuthentication {
+                debugPrint("Authentication is insufficient. Initiating pairing process. id: \(peripheral.identifier)")
+                // Pairing may automatically be triggered here depending on the peripheral.
+                if characteristic.properties.contains(.read) {
+                    //TODO: try just once in a hope that pairing will run...
+                    //peripheral.readValue(for: characteristic)
+                }
+            } else {
+                debugPrint("Error reading characteristic: \(error.localizedDescription)")
+            }
+        }
+        
+        if let error {
+            debugPrint("!!! Error \(error) \(#function)")
+            return
+        }
+        
+        readValue(characteristic: characteristic)
     }
     
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor descriptor: CBDescriptor, error: (any Error)?) {
         if let error {
-            debugPrint("!!! \(#function) error \(error)")
+            debugPrint("!!! Error \(error) \(#function)")
             return
         }
-        guard let userDescription = Self.characteristicUserDescription(descriptor: descriptor), !userDescription.isEmpty else {
+        
+        guard let userDescription = Self.userDescriptionValue(descriptor: descriptor), !userDescription.isEmpty else {
+            debugPrint("!!! \(#function) \(descriptor)")
             return
         }
             
@@ -360,19 +422,23 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         }
         
         descriptors.forEach { descriptor in
-            if let value = characteristicUserDescription(descriptor: descriptor) {
+            if let value = userDescriptionValue(descriptor: descriptor) {
                 if !value.isEmpty {
                     debugPrint("User Description: \(value)")
-                } else if characteristic.properties.contains(.read), descriptor.value == nil {
-                    peripheral.readValue(for: descriptor)
+                    return
                 }
             }
+            
+            if characteristic.properties.contains(.read), descriptor.value == nil {
+                peripheral.readValue(for: descriptor)
+            }
+            
             debugPrint("!!! didDiscoverDescriptorsFor \(descriptor.debugDescription)")
         }
         return true
     }
     
-    private static func characteristicValue<ValueType>(_ type: ValueType.Type = ValueType.self,
+    private static func descriptorValue<ValueType>(_ type: ValueType.Type = ValueType.self,
                                                        descriptor: CBDescriptor,
                                                        uuidString: String, idMatch: inout Bool) -> ValueType? {
         let sameIds = descriptor.uuid.uuidString == uuidString
@@ -386,9 +452,9 @@ public class BluetoothCentralManager: NSObject, CBCentralManagerDelegate, CBPeri
         return resValue
     }
     
-    private static func characteristicUserDescription(descriptor: CBDescriptor) -> String? {
+    private static func userDescriptionValue(descriptor: CBDescriptor) -> String? {
         var idMatch = false
-        return Self.characteristicValue(String.self,
+        return Self.descriptorValue(String.self,
                                         descriptor: descriptor,
                                         uuidString: CBUUIDCharacteristicUserDescriptionString, //FIXME: place into one entity..
                                         idMatch: &idMatch) ?? (idMatch ? "" : nil)
